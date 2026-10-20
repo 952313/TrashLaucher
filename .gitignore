@@ -1,1 +1,12 @@
 /.vscode
+config.json
+.gitignore
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec
+.venv/
+venv/
+env/
+/.minecraft
