@@ -1,6 +1,9 @@
 import customtkinter as ctk
 import os
 import shutil
+import subprocess
+import sys
+import webbrowser
 from tkinter import messagebox
 from core import MinecraftLauncherCore
 
@@ -15,6 +18,21 @@ except ImportError:
 # 设置全局外观主题
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
+
+ABOUT_TEXT = """TrashLauncher v1.0
+
+这是一个使用 Python 编写的 Minecraft Java 启动器项目。
+
+版权声明
+本项目仅用于学习、研究和个人使用。
+Minecraft 是 Mojang Studios 的商标，本项目与 Mojang Studios 没有官方关联。
+项目中使用的第三方组件和资源归其原作者所有。
+
+感谢所有为 Minecraft 社区提供工具、接口和开源项目的开发者。
+"""
+
+AUTHOR_WEBSITE_URL = "https://github.com/952313/"
+LAUNCHER_WEBSITE_URL = "https://github.com/952313/TrashLauncher"
 
 class TrashLauncherApp(ctk.CTk, DnDWrapper):
     def __init__(self):
@@ -52,9 +70,11 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
             "download_source": "原版",
             "download_manifest_url": "",
             "download_concurrency": 8,
+            "appearance_mode": "Dark",
         }
         self.default_settings = dict(defaults)
         self.settings = self.core.load_config(self.default_settings)
+        ctk.set_appearance_mode(self.settings["appearance_mode"])
         self.java_installations = self.core.discover_java_installations()
         self.java_expanded = True
         
@@ -62,14 +82,20 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
         self.is_sidebar_expanded = True
 
         # 网格布局：左侧菜单列，右侧主界面
+        self.grid_columnconfigure(0, weight=0, minsize=160)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
         # 构建界面组件
         self.create_sidebar()
         self.create_main_content()
+        self.refresh_sidebar_colors()
+        self.after_idle(self.refresh_sidebar_colors)
 
         self.settings_frame = None
+        self.about_frame = None
+        self.active_main_page = "home"
+        self.settings_return_page = "home"
         self._closing = False
         self._config_error_poll_id = self.after(100, self.poll_config_errors)
 
@@ -78,6 +104,7 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
         self.sidebar_frame = ctk.CTkFrame(self, width=160, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
         self.sidebar_frame.grid_propagate(False) # 防止内部组件撑开宽度
+        self.sidebar_frame.pack_propagate(False)
 
         # 顶部的折叠切换按钮 [≡]
         self.toggle_btn = ctk.CTkButton(
@@ -91,6 +118,7 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
 
         # 菜单选项按钮（微调 padx 和 anchor，解决偏移问题）
         btn_configs = [
+            ("🏠 主页", self.on_menu_home),
             ("📁 版本管理", self.on_menu_versions),
             ("🌐 下载资源", self.on_menu_downloads),
             ("⚙️ 游戏设置", self.on_menu_settings),
@@ -102,8 +130,10 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
             btn = ctk.CTkButton(
                 self.sidebar_frame, 
                 text=text, 
+                width=40,
                 anchor="w", 
                 fg_color="transparent", 
+                text_color=("#222222", "#eeeeee"),
                 hover_color=("#dbdbdb", "#2b2b2b"),
                 font=("Microsoft YaHei UI", 12),  # 显式指定标准字体，解决字体发粗/加重问题
                 command=cmd
@@ -114,7 +144,7 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
     def create_main_content(self):
         """ 创建右侧主界面 """
         self.main_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.main_frame.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        self.main_frame.grid(row=0, column=1, sticky="nsew")
 
         # 顶部：版本选择区域
         self.top_bar_frame = ctk.CTkFrame(self.main_frame, fg_color=("#f0f0f0", "#2b2b2b"))
@@ -175,20 +205,28 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
         """ 侧边栏折叠/展开动画逻辑 """
         if self.is_sidebar_expanded:
             self.sidebar_frame.configure(width=60)
-            self.menu_buttons[0].configure(text="📁")
-            self.menu_buttons[1].configure(text="🌐")
-            self.menu_buttons[2].configure(text="⚙️")
-            self.menu_buttons[3].configure(text="🗑️")
+            self.grid_columnconfigure(0, minsize=60)
+            for button, text in zip(self.menu_buttons, ["🏠", "📁", "🌐", "⚙️", "🗑️"]):
+                button.configure(text=text)
             self.is_sidebar_expanded = False
         else:
             self.sidebar_frame.configure(width=160)
-            self.menu_buttons[0].configure(text="📁 版本管理")
-            self.menu_buttons[1].configure(text="🌐 下载资源")
-            self.menu_buttons[2].configure(text="⚙️ 游戏设置")
-            self.menu_buttons[3].configure(text="🗑️ 关于项目")
+            self.grid_columnconfigure(0, minsize=160)
+            for button, text in zip(self.menu_buttons, ["🏠 主页", "📁 版本管理", "🌐 下载资源", "⚙️ 游戏设置", "🗑️ 关于项目"]):
+                button.configure(text=text)
             self.is_sidebar_expanded = True
+        self.refresh_sidebar_colors()
+
+    def refresh_sidebar_colors(self):
+        text_color = "#222222" if ctk.get_appearance_mode() == "Light" else "#eeeeee"
+        for button in self.menu_buttons:
+            button.configure(text_color=text_color)
+        self.toggle_btn.configure(text_color=text_color)
 
     # --- 按钮对应的事件处理（调用 Core 逻辑） ---
+
+    def on_menu_home(self):
+        self.show_home()
 
     def on_change_version_click(self):
         """ 点击更换版本按钮 """
@@ -213,15 +251,65 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
         self.show_settings()
 
     def on_menu_about(self):
-        print("[UI] 切换到: 关于项目视图")
+        self.show_about()
 
     def show_settings(self):
         """显示全局设置，并把高级设置直接放在同一页下方。"""
+        if self.active_main_page != "settings":
+            self.settings_return_page = self.active_main_page
+        self.active_main_page = "settings"
         self.main_frame.grid_remove()
+        if self.about_frame is not None:
+            self.about_frame.grid_remove()
         self.sidebar_frame.grid_remove()
         if self.settings_frame is None:
             self.create_settings_view()
         self.settings_frame.grid()
+
+    def show_about(self):
+        """只切换右侧内容，保留主页左侧边栏。"""
+        self.active_main_page = "about"
+        if self.settings_frame is not None:
+            self.settings_frame.grid_remove()
+        self.main_frame.grid_remove()
+        self.sidebar_frame.grid()
+        if self.about_frame is None:
+            self.create_about_view()
+        self.about_frame.grid()
+
+    def create_about_view(self):
+        self.about_frame = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
+        self.about_frame.grid(row=0, column=1, sticky="nsew")
+        self.about_frame.grid_remove()
+        self.about_frame.grid_rowconfigure(1, weight=1)
+        self.about_frame.grid_columnconfigure(0, weight=1)
+
+        header = ctk.CTkFrame(self.about_frame, height=62, corner_radius=0, fg_color="#3f73aa")
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_propagate(False)
+        ctk.CTkLabel(
+            header, text="关于项目", font=("Microsoft YaHei UI", 20, "bold"), text_color="white",
+        ).pack(side="left", padx=20, pady=14)
+
+        content = ctk.CTkFrame(self.about_frame, fg_color=("#e8eef5", "#202830"))
+        content.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        content.grid_columnconfigure(0, weight=1)
+        content.grid_rowconfigure(0, weight=1)
+        text = ctk.CTkTextbox(content, wrap="word", font=("Microsoft YaHei UI", 14), fg_color="transparent")
+        text.grid(row=0, column=0, sticky="nsew", padx=24, pady=(20, 8))
+        text.insert("1.0", ABOUT_TEXT.strip())
+        text.configure(state="disabled")
+
+        links = ctk.CTkFrame(content, fg_color="transparent")
+        links.grid(row=1, column=0, sticky="e", padx=24, pady=(8, 20))
+        ctk.CTkButton(
+            links, text="作者网站", width=130,
+            command=lambda: webbrowser.open(AUTHOR_WEBSITE_URL),
+        ).pack(side="left", padx=6)
+        ctk.CTkButton(
+            links, text="启动器项目主页", width=160,
+            command=lambda: webbrowser.open(LAUNCHER_WEBSITE_URL),
+        ).pack(side="left", padx=6)
 
     def create_settings_view(self):
         self.settings_frame = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
@@ -235,7 +323,7 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
         header.grid_propagate(False)
         ctk.CTkButton(
             header, text="←", width=48, height=42, font=("Microsoft YaHei UI", 26),
-            fg_color="transparent", hover_color="#315f91", command=self.show_home,
+            fg_color="transparent", hover_color="#315f91", command=self.leave_settings,
         ).pack(side="left", padx=(10, 2), pady=10)
         ctk.CTkLabel(
             header, text="设置", font=("Microsoft YaHei UI", 20, "bold"), text_color="white",
@@ -392,6 +480,17 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
             anchor="w", text_color="#966b12",
         ).grid(row=6, column=0, columnspan=2, sticky="ew", padx=22, pady=(8, 28))
 
+        ctk.CTkLabel(page, text="界面主题", anchor="w").grid(
+            row=7, column=0, sticky="w", padx=18, pady=12,
+        )
+        theme = ctk.CTkComboBox(
+            page, height=38, values=["亮色", "暗色", "跟随系统"],
+            command=self.update_appearance_mode,
+        )
+        theme.set(self.get_appearance_mode_label())
+        theme.grid(row=7, column=1, sticky="ew", padx=(12, 18), pady=8)
+        self.appearance_mode_combo = theme
+
     def show_settings_page(self, page_name):
         if page_name == "game":
             self.launcher_settings_page.grid_remove()
@@ -451,6 +550,40 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
         self.download_concurrency_slider.set(concurrency)
         self.download_concurrency_entry.delete(0, "end")
         self.download_concurrency_entry.insert(0, str(concurrency))
+
+    def get_appearance_mode_label(self):
+        labels = {"Light": "亮色", "Dark": "暗色", "System": "跟随系统"}
+        return labels.get(self.settings["appearance_mode"], "暗色")
+
+    def update_appearance_mode(self, label):
+        modes = {"亮色": "Light", "暗色": "Dark", "跟随系统": "System"}
+        mode = modes[label]
+        self.update_setting("appearance_mode", mode)
+        ctk.set_appearance_mode(mode)
+        self.refresh_sidebar_colors()
+        self.after_idle(self.refresh_sidebar_colors)
+
+    def restart_application(self):
+        self._closing = True
+        if hasattr(self, "_config_error_poll_id"):
+            self.after_cancel(self._config_error_poll_id)
+        self.core.close()
+        app_path = os.path.abspath(sys.argv[0])
+        if os.name == "nt":
+            helper_code = (
+                "import ctypes, os, subprocess, sys; "
+                "parent=int(sys.argv[1]); python_path=sys.argv[2]; app_path=sys.argv[3]; cwd=sys.argv[4]; "
+                "handle=ctypes.windll.kernel32.OpenProcess(0x00100000, False, parent); "
+                "ctypes.windll.kernel32.WaitForSingleObject(handle, 0xFFFFFFFF); "
+                "subprocess.Popen([python_path, app_path], cwd=cwd)"
+            )
+            subprocess.Popen(
+                [sys.executable, "-c", helper_code, str(os.getpid()), sys.executable, app_path, os.getcwd()],
+                creationflags=0x08000000 | 0x00000008,
+            )
+        else:
+            subprocess.Popen([sys.executable, app_path], cwd=os.getcwd())
+        self.destroy()
 
     def poll_config_errors(self):
         error_event = self.core.get_config_error()
@@ -705,6 +838,7 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
             "download_source": "原版",
             "download_manifest_url": "",
             "download_concurrency": 8,
+            "appearance_mode": "Dark",
         }
         self.default_settings = dict(defaults)
         self.settings = self.core.load_config(self.default_settings)
@@ -713,9 +847,19 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
         self.settings_frame.grid()
 
     def show_home(self):
-        self.settings_frame.grid_remove()
+        self.active_main_page = "home"
+        if self.settings_frame is not None:
+            self.settings_frame.grid_remove()
+        if self.about_frame is not None:
+            self.about_frame.grid_remove()
         self.sidebar_frame.grid()
         self.main_frame.grid()
+
+    def leave_settings(self):
+        if self.settings_return_page == "about":
+            self.show_about()
+        else:
+            self.show_home()
 
     def on_close(self):
         self._closing = True
