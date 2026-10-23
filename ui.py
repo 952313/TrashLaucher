@@ -3,9 +3,11 @@ import os
 import shutil
 import subprocess
 import sys
+import tkinter as tk
 import webbrowser
 from tkinter import messagebox
 from core import MinecraftLauncherCore
+from downloader import LOADER_CATALOG_URLS, MinecraftDownloadService
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -47,6 +49,7 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
         
         # 实例化核心逻辑类
         self.core = MinecraftLauncherCore()
+        self.download_service = MinecraftDownloadService()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # 全局设置的运行时状态
@@ -94,10 +97,12 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
 
         self.settings_frame = None
         self.about_frame = None
+        self.download_frame = None
         self.active_main_page = "home"
         self.settings_return_page = "home"
         self._closing = False
         self._config_error_poll_id = self.after(100, self.poll_config_errors)
+        self._download_event_poll_id = self.after(100, self.poll_download_events)
 
     def create_sidebar(self):
         """ 创建左侧菜单栏（修复内边距和对齐偏移） """
@@ -245,7 +250,7 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
         print("[UI] 切换到: 版本管理视图")
 
     def on_menu_downloads(self):
-        print("[UI] 切换到: 下载资源视图")
+        self.show_downloads()
 
     def on_menu_settings(self):
         self.show_settings()
@@ -259,6 +264,8 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
             self.settings_return_page = self.active_main_page
         self.active_main_page = "settings"
         self.main_frame.grid_remove()
+        if self.download_frame is not None:
+            self.download_frame.grid_remove()
         if self.about_frame is not None:
             self.about_frame.grid_remove()
         self.sidebar_frame.grid_remove()
@@ -271,11 +278,307 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
         self.active_main_page = "about"
         if self.settings_frame is not None:
             self.settings_frame.grid_remove()
+        if self.download_frame is not None:
+            self.download_frame.grid_remove()
         self.main_frame.grid_remove()
         self.sidebar_frame.grid()
         if self.about_frame is None:
             self.create_about_view()
         self.about_frame.grid()
+
+    def show_downloads(self):
+        self.active_main_page = "downloads"
+        if self.settings_frame is not None:
+            self.settings_frame.grid_remove()
+        if self.about_frame is not None:
+            self.about_frame.grid_remove()
+        self.main_frame.grid_remove()
+        self.sidebar_frame.grid()
+        if self.download_frame is None:
+            self.create_download_view()
+        self.download_frame.grid()
+        self.load_download_catalog()
+
+    def create_download_view(self):
+        self.download_frame = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
+        self.download_frame.grid(row=0, column=1, sticky="nsew")
+        self.download_frame.grid_remove()
+        self.download_frame.grid_rowconfigure(1, weight=1)
+        self.download_frame.grid_columnconfigure(0, weight=1)
+
+        header = ctk.CTkFrame(self.download_frame, height=62, corner_radius=0, fg_color="#3f73aa")
+        header.grid(row=0, column=0, sticky="ew")
+        header.grid_propagate(False)
+        ctk.CTkLabel(
+            header, text="下载资源", font=("Microsoft YaHei UI", 20, "bold"), text_color="white",
+        ).pack(side="left", padx=20, pady=14)
+
+        content = ctk.CTkFrame(self.download_frame, fg_color=("#e8eef5", "#202830"))
+        content.grid(row=1, column=0, sticky="nsew")
+        content.grid_rowconfigure(3, weight=1)
+        content.grid_columnconfigure(0, weight=1)
+        content.grid_columnconfigure(2, weight=0)
+        ctk.CTkLabel(content, text="Minecraft 版本下载", anchor="w", font=("Microsoft YaHei UI", 18, "bold"), text_color="#2f6da8").grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=22, pady=(20, 10),
+        )
+        filter_frame = ctk.CTkFrame(content, fg_color="transparent")
+        filter_frame.grid(row=1, column=0, columnspan=2, sticky="ew", padx=18, pady=8)
+        ctk.CTkLabel(filter_frame, text="版本筛选", anchor="w").pack(side="left", padx=(0, 14))
+        self.download_filter_vars = {}
+        for version_type in ("release", "snapshot", "old_alpha", "old_beta"):
+            variable = ctk.BooleanVar(value=True)
+            self.download_filter_vars[version_type] = variable
+            ctk.CTkCheckBox(
+                filter_frame, text=version_type, variable=variable,
+                command=self.render_filtered_versions,
+            ).pack(side="left", padx=8)
+        ctk.CTkButton(filter_frame, text="刷新", width=72, command=self.load_download_catalog).pack(side="right")
+
+        self.download_selected_label = ctk.CTkLabel(content, text="请先选择一个目标版本", anchor="w", text_color="gray60")
+        self.download_selected_label.grid(row=2, column=0, sticky="w", padx=22, pady=(4, 8))
+        self.download_loader_combo = ctk.CTkComboBox(content, values=list(LOADER_CATALOG_URLS), height=38)
+        self.download_loader_combo.set("原版")
+        self.download_loader_combo.grid(row=2, column=1, sticky="ew", padx=(12, 18), pady=(2, 8))
+        self.download_loader_combo.grid_remove()
+        self.download_selected_button = ctk.CTkButton(content, text="下载选中版本", width=140, command=self.download_selected_target)
+        self.download_selected_button.grid(row=2, column=2, sticky="e", padx=(4, 18), pady=(2, 8))
+        self.download_selected_button.grid_remove()
+
+        self.download_version_list = ctk.CTkFrame(content, fg_color=ctk.ThemeManager.theme["CTkFrame"]["fg_color"])
+        self.download_version_list.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=16, pady=(8, 8))
+        self.download_version_list.grid_columnconfigure(0, weight=1)
+        self.download_version_list.bind("<Configure>", self.on_version_list_resize)
+        self.bind_all("<MouseWheel>", self.on_version_mousewheel)
+
+        self.download_choice_frame = ctk.CTkFrame(content, fg_color=ctk.ThemeManager.theme["CTkFrame"]["fg_color"])
+        self.download_choice_frame.grid(row=3, column=0, columnspan=2, sticky="nsew", padx=16, pady=(8, 8))
+        self.download_choice_frame.grid_remove()
+        self.download_choice_frame.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(self.download_choice_frame, text="下载版本", anchor="w", font=("Microsoft YaHei UI", 18, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=22, pady=(22, 18),
+        )
+        self.download_choice_version_label = ctk.CTkLabel(self.download_choice_frame, text="", anchor="w")
+        self.download_choice_version_label.grid(row=1, column=0, columnspan=2, sticky="w", padx=22, pady=8)
+        ctk.CTkLabel(self.download_choice_frame, text="版本目录名称", anchor="w").grid(row=2, column=0, sticky="w", padx=22, pady=10)
+        self.download_installation_entry = ctk.CTkEntry(self.download_choice_frame, height=38, placeholder_text="例如：1.20.4-fabric")
+        self.download_installation_entry.grid(row=2, column=1, sticky="ew", padx=(12, 22), pady=8)
+        ctk.CTkLabel(self.download_choice_frame, text="加载器", anchor="w").grid(row=3, column=0, sticky="w", padx=22, pady=10)
+        self.download_choice_loader_combo = ctk.CTkComboBox(self.download_choice_frame, values=list(LOADER_CATALOG_URLS), height=38)
+        self.download_choice_loader_combo.set("原版")
+        self.download_choice_loader_combo.grid(row=3, column=1, sticky="ew", padx=(12, 22), pady=8)
+        choice_buttons = ctk.CTkFrame(self.download_choice_frame, fg_color="transparent")
+        choice_buttons.grid(row=4, column=0, columnspan=2, sticky="e", padx=22, pady=(22, 22))
+        ctk.CTkButton(choice_buttons, text="返回版本列表", width=120, command=self.show_download_version_list).pack(side="left", padx=6)
+        self.download_choice_button = ctk.CTkButton(choice_buttons, text="开始下载", width=120, command=self.download_selected_target)
+        self.download_choice_button.pack(side="left", padx=6)
+
+        page_controls = ctk.CTkFrame(content, fg_color="transparent")
+        self.download_page_controls = page_controls
+        page_controls.grid(row=4, column=0, columnspan=2, sticky="ew", padx=22, pady=(0, 4))
+        page_controls.grid_columnconfigure(1, weight=1)
+        self.download_previous_button = ctk.CTkButton(page_controls, text="上一页", width=90, command=lambda: self.change_download_page(-1))
+        self.download_previous_button.grid(row=0, column=0, sticky="w")
+        self.download_page_label = ctk.CTkLabel(page_controls, text="第 0 / 0 页")
+        self.download_page_label.grid(row=0, column=1)
+        self.download_next_button = ctk.CTkButton(page_controls, text="下一页", width=90, command=lambda: self.change_download_page(1))
+        self.download_next_button.grid(row=0, column=2, sticky="e")
+        self.download_page_progress = ctk.CTkProgressBar(content, height=10)
+        self.download_page_progress.grid(row=5, column=0, columnspan=2, sticky="ew", padx=22, pady=(2, 4))
+        self.download_page_progress.set(0)
+        self.download_progress = ctk.CTkProgressBar(content, height=14)
+        self.download_progress.grid(row=6, column=0, columnspan=2, sticky="ew", padx=22, pady=(8, 2))
+        self.download_progress.set(0)
+        self.download_status = ctk.CTkLabel(content, text="准备加载版本列表", anchor="w", text_color="gray60")
+        self.download_status.grid(row=7, column=0, columnspan=2, sticky="ew", padx=22, pady=(2, 18))
+        self.download_versions = []
+        self.download_selected_version_data = None
+        self.download_pending_target = None
+        self.download_render_token = 0
+        self.download_page_rows = []
+        self.download_page = 0
+        self.download_page_size = 1
+        self.download_row_height = 52
+        self.download_wheel_distance = 0
+
+    def load_download_catalog(self):
+        if self.download_frame is None:
+            return
+        self.show_download_version_list()
+        url = self.get_download_manifest_url()
+        self.download_selected_version_data = None
+        self.download_loader_combo.grid_remove()
+        self.download_selected_button.grid_remove()
+        self.download_status.configure(text="正在后台加载版本列表...")
+        self.download_progress.set(0)
+        self.download_service.load_versions_async("原版", url)
+
+    def handle_download_event(self, event):
+        event_type = event[0]
+        if event_type == "catalog_loading":
+            return
+        if event_type == "catalog_loaded":
+            _, loader, versions = event
+            if loader != "原版" and self.download_pending_target is not None:
+                target_loader, target_version, target_name = self.download_pending_target
+                self.download_pending_target = None
+                if target_version["id"] not in {item["id"] for item in versions}:
+                    self.download_status.configure(text=f"{target_loader} 不支持 Minecraft {target_version['id']}，无法下载。")
+                    return
+                self.start_loader_download(target_loader, target_version, target_name)
+                return
+            self.download_versions = versions
+            self.render_filtered_versions()
+            self.download_status.configure(text=f"已加载 {len(versions)} 个版本，正在显示全部版本")
+        elif event_type == "catalog_error":
+            if self.download_pending_target is not None:
+                self.download_pending_target = None
+            self.download_status.configure(text=f"版本列表加载失败：{event[2]}")
+        elif event_type == "download_progress":
+            _, loader, version_id, downloaded, total = event
+            self.download_progress.set(downloaded / total if total else 0)
+            size_text = f"{downloaded / 1024:.1f} KB"
+            if total:
+                size_text += f" / {total / 1024:.1f} KB"
+            self.download_status.configure(text=f"正在下载 {version_id}：{size_text}")
+        elif event_type == "download_done":
+            self.download_progress.set(1)
+            self.download_status.configure(text=f"下载完成：{event[3]}")
+        elif event_type == "download_error":
+            self.download_progress.set(0)
+            self.download_status.configure(text=f"下载失败：{event[3]}")
+
+    def render_filtered_versions(self):
+        if not hasattr(self, "download_version_list"):
+            return
+        enabled_types = {key for key, variable in self.download_filter_vars.items() if variable.get()}
+        versions = [item for item in self.download_versions if item.get("type") in enabled_types]
+        self.download_visible_versions = versions
+        self.download_page = 0
+        self.update_download_page()
+
+    def render_version_batch(self, token):
+        self.update_download_page()
+
+    def on_version_mousewheel(self, event):
+        widget = self.winfo_containing(event.x_root, event.y_root)
+        while widget is not None:
+            if widget == self.download_version_list:
+                self.download_wheel_distance += -event.delta
+                self.flush_download_wheel()
+                return "break"
+            widget = widget.master
+
+    def flush_download_wheel(self):
+        while abs(self.download_wheel_distance) >= 120:
+            direction = 1 if self.download_wheel_distance > 0 else -1
+            self.download_wheel_distance -= direction * 120
+            self.change_download_page(direction)
+        return "break"
+
+    def on_version_list_resize(self, _event=None):
+        if not hasattr(self, "download_version_list"):
+            return
+        height = max(self.download_version_list.winfo_height(), self.download_row_height)
+        self.ensure_download_page_rows()
+        self.update_idletasks()
+        actual_row_height = max(1, self.download_page_rows[0]["button"].winfo_reqheight())
+        self.download_page_size = max(1, height // actual_row_height)
+        self.update_download_page()
+
+    def ensure_download_page_rows(self):
+        while len(self.download_page_rows) < self.download_page_size:
+            button = ctk.CTkButton(
+                self.download_version_list, text="", height=self.download_row_height,
+                anchor="w", command=lambda item=len(self.download_page_rows): self.select_download_page_row(item),
+            )
+            self.download_page_rows.append({"button": button, "version": None})
+
+    def change_download_page(self, offset):
+        total_pages = max(1, (len(self.download_visible_versions) + self.download_page_size - 1) // self.download_page_size)
+        self.download_page = max(0, min(total_pages - 1, self.download_page + offset))
+        self.update_download_page()
+
+    def update_download_page(self):
+        if not hasattr(self, "download_visible_versions"):
+            return
+        self.ensure_download_page_rows()
+        total_pages = max(1, (len(self.download_visible_versions) + self.download_page_size - 1) // self.download_page_size)
+        self.download_page = max(0, min(total_pages - 1, self.download_page))
+        start = self.download_page * self.download_page_size
+        for slot, row in enumerate(self.download_page_rows):
+            index = start + slot
+            if index < len(self.download_visible_versions):
+                version = self.download_visible_versions[index]
+                row["version"] = version
+                row["button"].configure(
+                    text=f"{version['id']}    {version.get('type', '')}",
+                    command=lambda item=row: self.select_download_version(item["version"]),
+                )
+                row["button"].grid(row=slot, column=0, sticky="ew", pady=1)
+            else:
+                row["version"] = None
+                row["button"].grid_remove()
+        self.download_page_label.configure(text=f"第 {self.download_page + 1} / {total_pages} 页")
+        self.download_previous_button.configure(state="normal" if self.download_page > 0 else "disabled")
+        self.download_next_button.configure(state="normal" if self.download_page < total_pages - 1 else "disabled")
+        self.download_page_progress.set((self.download_page + 1) / total_pages)
+        self.download_status.configure(text=f"正在显示版本：{start + 1 if self.download_visible_versions else 0} - {min(start + self.download_page_size, len(self.download_visible_versions))} / {len(self.download_visible_versions)}")
+        self.update_idletasks()
+
+    def select_download_page_row(self, row_index):
+        version = self.download_page_rows[row_index]["version"]
+        if version is not None:
+            self.select_download_version(version)
+
+    def select_download_version(self, version):
+        self.download_selected_version_data = version
+        self.download_choice_version_label.configure(text=f"已选择 Minecraft {version['id']}，请填写目录名称并选择加载器")
+        self.download_installation_entry.delete(0, "end")
+        self.download_installation_entry.insert(0, version["id"])
+        self.download_version_list.grid_remove()
+        self.download_page_controls.grid_remove()
+        self.download_page_progress.grid_remove()
+        self.download_selected_label.grid_remove()
+        self.download_loader_combo.grid_remove()
+        self.download_selected_button.grid_remove()
+        self.download_choice_frame.grid()
+
+    def show_download_version_list(self):
+        self.download_choice_frame.grid_remove()
+        self.download_version_list.grid()
+        self.download_page_controls.grid()
+        self.download_page_progress.grid()
+        self.download_selected_label.grid()
+
+    def download_selected_target(self):
+        if self.download_selected_version_data is None:
+            return
+        installation_name = self.download_installation_entry.get().strip()
+        if not installation_name:
+            messagebox.showerror("名称无效", "请输入版本目录名称。")
+            return
+        if any(char in installation_name for char in '\\/:*?"<>|') or installation_name in {".", ".."}:
+            messagebox.showerror("名称无效", "名称不能包含 Windows 路径符号。")
+            return
+        target_dir = os.path.join(self.download_service.download_root, installation_name)
+        if os.path.exists(target_dir):
+            messagebox.showerror("目录已存在", "该版本目录已经存在，请重新输入名称。")
+            self.download_installation_entry.focus_set()
+            return
+        loader = self.download_choice_loader_combo.get()
+        selected_version = self.download_selected_version_data
+        if loader in {"Fabric", "Quilt"}:
+            self.download_pending_target = (loader, selected_version, installation_name)
+            self.download_status.configure(text=f"正在检查 {loader} 是否支持 Minecraft {selected_version['id']}...")
+            self.download_service.load_versions_async(loader, LOADER_CATALOG_URLS[loader])
+            return
+        self.start_loader_download(loader, selected_version, installation_name)
+
+    def start_loader_download(self, loader, selected_version, installation_name):
+        version = self.download_service.make_loader_version(loader, selected_version)
+        self.download_progress.set(0)
+        self.download_status.configure(text=f"准备下载 {version['id']} 到 .minecraft/versions/{installation_name}...")
+        self.download_service.download_version_async(loader, version, installation_name)
 
     def create_about_view(self):
         self.about_frame = ctk.CTkFrame(self, fg_color="transparent", corner_radius=0)
@@ -600,6 +903,16 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
         if not self._closing:
             self._config_error_poll_id = self.after(100, self.poll_config_errors)
 
+    def poll_download_events(self):
+        while True:
+            event = self.download_service.get_event()
+            if event is None:
+                break
+            if self.download_frame is not None:
+                self.handle_download_event(event)
+        if not self._closing:
+            self._download_event_poll_id = self.after(100, self.poll_download_events)
+
     def restore_settings_from_config(self):
         self.settings = self.core.load_config(self.default_settings)
         if self.settings_frame is not None:
@@ -852,12 +1165,16 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
             self.settings_frame.grid_remove()
         if self.about_frame is not None:
             self.about_frame.grid_remove()
+        if self.download_frame is not None:
+            self.download_frame.grid_remove()
         self.sidebar_frame.grid()
         self.main_frame.grid()
 
     def leave_settings(self):
         if self.settings_return_page == "about":
             self.show_about()
+        elif self.settings_return_page == "downloads":
+            self.show_downloads()
         else:
             self.show_home()
 
@@ -865,5 +1182,7 @@ class TrashLauncherApp(ctk.CTk, DnDWrapper):
         self._closing = True
         if hasattr(self, "_config_error_poll_id"):
             self.after_cancel(self._config_error_poll_id)
+        if hasattr(self, "_download_event_poll_id"):
+            self.after_cancel(self._download_event_poll_id)
         self.core.close()
         self.destroy()
